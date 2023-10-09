@@ -1,0 +1,385 @@
+%Matlab Data Acquisition for Fluke 289 + GUI
+
+classdef F289DAQ < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure             matlab.ui.Figure
+        GridLayout           matlab.ui.container.GridLayout
+        Table                matlab.ui.control.Table
+        Panel_2              matlab.ui.container.Panel
+        StatusLamp           matlab.ui.control.Lamp
+        StatusLabel          matlab.ui.control.Label
+        ExportGraphButton    matlab.ui.control.Button
+        ClearTableButton     matlab.ui.control.Button
+        ClearGraphButton     matlab.ui.control.Button
+        Panel                matlab.ui.container.Panel
+        GraphingSwitch       matlab.ui.control.Switch
+        GraphingSwitchLabel  matlab.ui.control.Label
+        PollingSwitch        matlab.ui.control.Switch
+        PollingSwitchLabel   matlab.ui.control.Label
+        ExportTableButton    matlab.ui.control.Button
+        PollingRate          matlab.ui.control.NumericEditField
+        PollingPeriodsLabel  matlab.ui.control.Label
+        ConnectButton        matlab.ui.control.StateButton
+        PortDropDown         matlab.ui.control.DropDown
+        PortDropDownLabel    matlab.ui.control.Label
+        StatusEditField      matlab.ui.control.EditField
+        UIAxes               matlab.ui.control.UIAxes
+    end
+
+
+    properties (Access = private)
+        meter; % meter connection
+        pollingTimer %polling timer
+        t0; %initial time
+        tg; %last grapgh update time
+        t; %time
+        y1; %value1
+        y2; %value2
+
+    end
+
+    methods (Access = private)
+
+        function pollingFunc(app, ~, event)
+
+            writeline(app.meter,"QDDA");
+            time=datetime;
+
+            % V_AC,NONE,AUTO,VAC,5,0,OFF,0.000,0,2,LIVE,0,VAC,0,4,5,NORMAL,NONE,1690549438.826,PRIMARY,0,VAC,0,4,5,NORMAL,NONE,1690549438.826
+            a = readline(app.meter);
+            a = readline(app.meter);
+            if (isstring(a))
+                s = strsplit(a,',');
+
+                app.StatusEditField.Value = a;
+                sec=seconds(time-app.t0);
+
+
+                app.Table.Data=[app.Table.Data; [datestr(time) sec str2double(s(12)) s(13) str2double(s(21)) s(22)] ];
+                scroll(app.Table,'bottom');
+                h=height(app.Table.Data);
+                if(h>1)
+                    if(app.Table.Data(h,4)~=app.Table.Data(h-1,4) | app.Table.Data(h,6)~=app.Table.Data(h-1,6)  )
+                        initializeGraph(app)
+                    end
+                else
+                    initializeGraph(app)
+                end
+
+                app.t=[app.t sec];
+                app.y1=[app.y1 str2double(s(12))];
+                app.y2=[app.y2 str2double(s(21))];
+
+                if(strcmp(app.GraphingSwitch.Value,"On")&seconds(time-app.tg)>2)
+                    app.tg=time;
+                    yyaxis(app.UIAxes,'left')
+                    plot(app.UIAxes,app.t,app.y1,'Marker','o','MarkerSize',6)
+                    yyaxis(app.UIAxes,'right')
+                    plot(app.UIAxes,app.t,app.y2,'Marker','o','MarkerSize',6)
+                end
+
+
+            end
+        end
+
+        function initializeGraph(app)
+            cla(app.UIAxes)
+            app.t=[];
+            app.y1=[];
+            app.y2=[];
+            xlabel(app.UIAxes, 'Time (s)');
+            yyaxis(app.UIAxes, 'left')
+            ylabel(app.UIAxes, app.Table.Data(height(app.Table.Data),4));
+            yyaxis(app.UIAxes, 'right')
+            ylabel(app.UIAxes, app.Table.Data(height(app.Table.Data),6));
+        end
+    end
+
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Code that executes after component creation
+        function startupFcn(app)
+            app.PollingSwitch.Enable='off';
+            app.PortDropDown.Items = serialportlist("all");
+
+            %plot(app.UIAxes,app.t,app.y1);
+            %   yyaxis(app.UIAxes,'right')
+            %linkdata on
+            %app.h=plot(app.UIAxes,app.t,app.y2);
+            % linkdata on;
+            %app.StatusLamp.Color='888888';
+
+            % Create timer object
+            app.pollingTimer = timer(...
+                'ExecutionMode', 'fixedRate', ...      % Run timer repeatedly
+                'Period', app.PollingRate.Value, ...                       % Period is 5 seconds
+                'BusyMode', 'queue',...                % Queue timer callbacks when busy
+                'TimerFcn', @app.pollingFunc);   % Callback that runs every period
+
+        end
+
+        % Value changed function: ConnectButton
+        function ConnectButtonValueChanged(app, event)
+
+
+
+            value = app.ConnectButton.Value;
+
+            if(value)
+
+                app.meter = serialport(app.PortDropDown.Value,115200,"Timeout",1);
+                configureTerminator(app.meter,"CR");
+                writeline(app.meter,"ID");
+                if(strcmp('0',readline(app.meter)))
+                    app.StatusLamp.Color=[0 1 0];
+                    app.PollingSwitch.Enable='on';
+                    drawnow
+                    app.ConnectButton.Text = 'Disconnect';
+                    app.StatusEditField.Value = strcat('Connection Successful: ',readline(app.meter));
+                else
+                    app.StatusLamp.Color=[1 0 0];
+                    app.StatusEditField.Value = 'Error Connecting to Meter.  Check: COM Port#, Meter is On, Meter is Plugged in';
+                    app.meter=[];
+                    clear app.meter
+                    app.ConnectButton.Value=0;
+                    app.ConnectButton.Text = 'Connect';
+                    app.PollingSwitch.Enable='off';
+
+                end
+            else
+                stop(app.pollingTimer);
+                flush(app.meter)
+                app.meter=[];
+                clear app.meter
+                app.ConnectButton.Text = 'Connect';
+                app.PollingSwitch.Enable='off';
+                app.PollingSwitch.Value="Off";
+                app.StatusEditField.Value = 'Disconnected from meter.';
+
+            end
+
+        end
+
+        % Close request function: UIFigure
+        function UIFigureCloseRequest(app, event)
+            stop(app.pollingTimer);
+            delete(app.pollingTimer);
+            clear app.meter
+            delete(app)
+
+        end
+
+        % Value changed function: PollingSwitch
+        function PollingSwitchValueChanged(app, event)
+            value = strcmp(app.PollingSwitch.Value,"On")
+
+            if(value)
+                app.t0=datetime;
+                app.tg=app.t0;
+                stop(app.pollingTimer);
+                delete(app.pollingTimer);
+                app.pollingTimer = timer(...
+                    'ExecutionMode', 'fixedRate', ...      % Run timer repeatedly
+                    'Period', app.PollingRate.Value, ...                       % Period is 5 seconds
+                    'BusyMode', 'queue',...                % Queue timer callbacks when busy
+                    'TimerFcn', @app.pollingFunc);
+                start(app.pollingTimer);
+                %
+            else
+                stop(app.pollingTimer)
+            end
+
+        end
+
+        % Button pushed function: ClearGraphButton
+        function ClearGraphButtonPushed(app, event)
+            app.t=[];
+            app.y1=[];
+            app.y2=[];
+            cla(app.UIAxes)
+
+
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [200 200 840 600];
+            app.UIFigure.Name = 'MATLAB App';
+            app.UIFigure.CloseRequestFcn = createCallbackFcn(app, @UIFigureCloseRequest, true);
+
+            % Create GridLayout
+            app.GridLayout = uigridlayout(app.UIFigure);
+            app.GridLayout.ColumnWidth = {260, '1.09x'};
+            app.GridLayout.RowHeight = {225, 22, '3.03x'};
+            app.GridLayout.ColumnSpacing = 0;
+
+            % Create UIAxes
+            app.UIAxes = uiaxes(app.GridLayout);
+            xlabel(app.UIAxes, 'X')
+            ylabel(app.UIAxes, 'Y')
+            zlabel(app.UIAxes, 'Z')
+            app.UIAxes.Layout.Row = 1;
+            app.UIAxes.Layout.Column = 2;
+
+            % Create StatusEditField
+            app.StatusEditField = uieditfield(app.GridLayout, 'text');
+            app.StatusEditField.Editable = 'off';
+            app.StatusEditField.Layout.Row = 2;
+            app.StatusEditField.Layout.Column = [1 2];
+
+            % Create Panel_2
+            app.Panel_2 = uipanel(app.GridLayout);
+            app.Panel_2.AutoResizeChildren = 'off';
+            app.Panel_2.BackgroundColor = [0.502 0.502 0.502];
+            app.Panel_2.Layout.Row = 1;
+            app.Panel_2.Layout.Column = 1;
+
+            % Create PortDropDownLabel
+            app.PortDropDownLabel = uilabel(app.Panel_2);
+            app.PortDropDownLabel.HorizontalAlignment = 'right';
+            app.PortDropDownLabel.Position = [11 193 28 22];
+            app.PortDropDownLabel.Text = 'Port';
+
+            % Create PortDropDown
+            app.PortDropDown = uidropdown(app.Panel_2);
+            app.PortDropDown.Items = {'COM #'};
+            app.PortDropDown.Position = [54 193 71 22];
+            app.PortDropDown.Value = 'COM #';
+
+            % Create ConnectButton
+            app.ConnectButton = uibutton(app.Panel_2, 'state');
+            app.ConnectButton.ValueChangedFcn = createCallbackFcn(app, @ConnectButtonValueChanged, true);
+            app.ConnectButton.Text = 'Connect';
+            app.ConnectButton.Position = [148 193 100 22];
+
+            % Create PollingPeriodsLabel
+            app.PollingPeriodsLabel = uilabel(app.Panel_2);
+            app.PollingPeriodsLabel.HorizontalAlignment = 'right';
+            app.PollingPeriodsLabel.Position = [15 160 97 22];
+            app.PollingPeriodsLabel.Text = 'Polling Period (s)';
+
+            % Create PollingRate
+            app.PollingRate = uieditfield(app.Panel_2, 'numeric');
+            app.PollingRate.Position = [118 160 130 22];
+            app.PollingRate.Value = 1;
+
+            % Create ExportTableButton
+            app.ExportTableButton = uibutton(app.Panel_2, 'push');
+            app.ExportTableButton.Position = [162 71 87 22];
+            app.ExportTableButton.Text = 'Export Table';
+
+            % Create Panel
+            app.Panel = uipanel(app.Panel_2);
+            app.Panel.AutoResizeChildren = 'off';
+            app.Panel.BackgroundColor = [0.149 0.149 0.149];
+            app.Panel.Position = [11 8 142 129];
+
+            % Create PollingSwitchLabel
+            app.PollingSwitchLabel = uilabel(app.Panel);
+            app.PollingSwitchLabel.HorizontalAlignment = 'center';
+            app.PollingSwitchLabel.FontWeight = 'bold';
+            app.PollingSwitchLabel.FontColor = [1 1 1];
+            app.PollingSwitchLabel.Position = [52 69 45 22];
+            app.PollingSwitchLabel.Text = 'Polling';
+
+            % Create PollingSwitch
+            app.PollingSwitch = uiswitch(app.Panel, 'slider');
+            app.PollingSwitch.ValueChangedFcn = createCallbackFcn(app, @PollingSwitchValueChanged, true);
+            app.PollingSwitch.FontWeight = 'bold';
+            app.PollingSwitch.FontColor = [1 1 1];
+            app.PollingSwitch.Position = [50 89 45 20];
+
+            % Create GraphingSwitchLabel
+            app.GraphingSwitchLabel = uilabel(app.Panel);
+            app.GraphingSwitchLabel.HorizontalAlignment = 'center';
+            app.GraphingSwitchLabel.FontWeight = 'bold';
+            app.GraphingSwitchLabel.FontColor = [1 1 1];
+            app.GraphingSwitchLabel.Position = [41 14 59 22];
+            app.GraphingSwitchLabel.Text = 'Graphing';
+
+            % Create GraphingSwitch
+            app.GraphingSwitch = uiswitch(app.Panel, 'slider');
+            app.GraphingSwitch.FontWeight = 'bold';
+            app.GraphingSwitch.FontColor = [1 1 1];
+            app.GraphingSwitch.Position = [50 34 45 20];
+            app.GraphingSwitch.Value = 'On';
+
+            % Create ClearGraphButton
+            app.ClearGraphButton = uibutton(app.Panel_2, 'push');
+            app.ClearGraphButton.ButtonPushedFcn = createCallbackFcn(app, @ClearGraphButtonPushed, true);
+            app.ClearGraphButton.Position = [162 41 87 22];
+            app.ClearGraphButton.Text = 'Clear Graph';
+
+            % Create ClearTableButton
+            app.ClearTableButton = uibutton(app.Panel_2, 'push');
+            app.ClearTableButton.Position = [161 101 87 22];
+            app.ClearTableButton.Text = 'Clear Table';
+
+            % Create ExportGraphButton
+            app.ExportGraphButton = uibutton(app.Panel_2, 'push');
+            app.ExportGraphButton.Position = [161 12 87 22];
+            app.ExportGraphButton.Text = 'Export Graph';
+
+            % Create StatusLabel
+            app.StatusLabel = uilabel(app.Panel_2);
+            app.StatusLabel.HorizontalAlignment = 'right';
+            app.StatusLabel.FontWeight = 'bold';
+            app.StatusLabel.Position = [168 130 46 22];
+            app.StatusLabel.Text = 'Status:';
+
+            % Create StatusLamp
+            app.StatusLamp = uilamp(app.Panel_2);
+            app.StatusLamp.Position = [217 131 20 20];
+            app.StatusLamp.Color = [0 0 0];
+
+            % Create Table
+            app.Table = uitable(app.GridLayout);
+            app.Table.ColumnName = {'Date'; 'ΔTime'; 'Primary Value'; 'Primary Unit'; 'Secondary Value'; 'Secondary Unit'};
+            app.Table.RowName = {};
+            app.Table.Layout.Row = 3;
+            app.Table.Layout.Column = [1 2];
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = F289DAQ
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            % Execute the startup function
+            runStartupFcn(app, @startupFcn)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
